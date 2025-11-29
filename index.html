@@ -7,8 +7,8 @@
     body { font-family: system-ui, Arial; margin: 12px; color:#111; }
     .row { display:flex; gap:12px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
     .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    #screenWrap { position:relative; border:1px solid #888; background:#000; width:fit-content; padding:6px; }
-    #screen { image-rendering:pixelated; display:block; background:#000; }
+    #screenWrap { position:relative; border:1px solid #888; background:transparent; width:fit-content; padding:0; }
+    #screen { image-rendering:pixelated; display:block; background:transparent; }
     #ui { display:flex; gap:12px; margin-top:12px; }
     #regionsList, #editor { border:1px solid #bbb; padding:8px; min-width:260px; max-width:420px; background:#f8f8f8; }
     button { padding:6px 8px; }
@@ -33,7 +33,7 @@
     <label>Scale <input id="screenScale" type="number" value="3" min="1" max="16"></label>
     <button id="clearRegions" class="small">Clear Regions</button>
     <button id="exportAll" class="small">Export .h (all regions/canvases)</button>
-    <div class="muted">Drag on the screen to create a named region — or create templates and drop them onto the screen.</div>
+    <div class="muted">Click on the screen to create a named region — or create templates, select one and click the preview to place it.</div>
   </div>
 
   <div id="screenWrap">
@@ -55,7 +55,7 @@
           <button id="addTemplate" class="small">Add</button>
         </div>
         <div id="templatesContainer" class="muted">No templates yet.</div>
-        <div class="templateDragHint muted">Drag a template onto the preview to place it. Dropped region will be placed at the drop position (clamped to fit)</div>
+        <div class="templateDragHint muted">Select a template then click the preview to place it. Placed region will use the clicked position as the top-left corner (clamped to fit)</div>
       </div>
 
       <div class="muted" style="margin-top:8px;">Click a region's "Edit" to create canvases for that size. Use "Preview" to toggle a chosen canvas on-screen.</div>
@@ -72,6 +72,7 @@
     const regions = []; // {id, name, x,y,w,h, canvases: [{name, pixels}], previewIndex: int | null, previewOn: bool}
     const templates = []; // {id, name, w, h}
     let screenW = 128, screenH = 64, screenScale = 3;
+    let selectedTemplateId = null;
     const screenCanvas = document.getElementById('screen');
     const screenCtx = screenCanvas.getContext('2d');
 
@@ -210,44 +211,28 @@
       }
     }
 
-    // Screen selection events: drag to create region
+    // Screen selection events: click to place selected template (top-left)
     function attachScreenEvents(){
-      // Only support template drag/drop placement. Pointer-based drag-to-create is removed.
+      // Support placing a selected template by clicking the preview (click gives the top-left)
       const screenWrap = document.getElementById('screenWrap');
-
-      // allow drop on the preview area
-      screenWrap.addEventListener('dragover', e=>{ e.preventDefault(); });
-      screenWrap.addEventListener('drop', e=>{
-        e.preventDefault();
-        try {
-          const raw = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
-          if(!raw) return;
-          const payload = JSON.parse(raw);
-          if(payload && payload.templateId){
-            const tmpl = templates.find(t=>t.id===payload.templateId);
-            if(!tmpl) return;
-            const rect = screenCanvas.getBoundingClientRect();
-            const cx = Math.floor((e.clientX - rect.left) / screenScale);
-            const cy = Math.floor((e.clientY - rect.top) / screenScale);
-            // clamp so template fits fully on screen
-            const x = clamp(cx, 0, Math.max(0, screenW - tmpl.w));
-            const y = clamp(cy, 0, Math.max(0, screenH - tmpl.h));
-            const id = Date.now() + Math.floor(Math.random()*999);
-            const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, canvases: [], previewIndex: null, previewOn: false };
-            regions.push(region);
-            editingRegionId = id; editingCanvasIndex = null;
-            renderRegionsList(); renderEditor(); renderScreen();
-          }
-        } catch(err){
-          console.warn('drop parse error', err);
-        } finally {
-          dragDropActive = false;
-        }
+      screenWrap.addEventListener('click', e=>{
+        if(!selectedTemplateId) return;
+        const tmpl = templates.find(t=>t.id===selectedTemplateId);
+        if(!tmpl) return;
+        const rect = screenCanvas.getBoundingClientRect();
+        const cx = Math.floor((e.clientX - rect.left) / screenScale);
+        const cy = Math.floor((e.clientY - rect.top) / screenScale);
+        // clamp so template fits fully on screen
+        const x = clamp(cx, 0, Math.max(0, screenW - tmpl.w));
+        const y = clamp(cy, 0, Math.max(0, screenH - tmpl.h));
+        const id = Date.now() + Math.floor(Math.random()*999);
+        const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, canvases: [], previewIndex: null, previewOn: false };
+        regions.push(region);
+        editingRegionId = id; editingCanvasIndex = null;
+        // clear selection after placement
+        selectedTemplateId = null;
+        renderTemplatesList(); renderRegionsList(); renderEditor(); renderScreen();
       });
-
-      // Keep a flag while dragging templates so other pointer handlers (if added) can avoid interfering
-      screenWrap.addEventListener('dragenter', ()=>{ dragDropActive = true; });
-      screenWrap.addEventListener('dragleave', ()=>{ dragDropActive = false; });
     }
 
     let dragDropActive = false;
@@ -256,7 +241,7 @@
     function renderRegionsList(){
       const container = document.getElementById('regionsContainer');
       container.innerHTML = '';
-      if(regions.length===0){ container.innerHTML = '<div class="muted">No regions defined. Drag on the screen to create one.</div>'; return; }
+      if(regions.length===0){ container.innerHTML = '<div class="muted">No regions defined. Select a template and click on the screen to place one.</div>'; return; }
       regions.forEach((r, idx)=>{
         const div = document.createElement('div'); div.className='regionItem';
         const left = document.createElement('div');
@@ -295,27 +280,30 @@
       c.className='';
       templates.forEach((t, i)=>{
         const div = document.createElement('div'); div.className='templateItem';
-        div.draggable = true;
         div.innerHTML = `<div><strong>${t.name}</strong> <span class="muted">${t.w}x${t.h}</span></div>`;
-        const right = document.createElement('div');
-        const del = document.createElement('button'); del.textContent='Del'; del.className='small';
-        del.onclick = (ev)=>{ ev.stopPropagation(); ev.preventDefault(); if(!confirm('Remove template?')) return; templates.splice(i,1); renderTemplatesList(); };
-        right.appendChild(del);
-        div.appendChild(right);
-
-        div.addEventListener('dragstart', (e)=>{
-          e.dataTransfer.setData('application/json', JSON.stringify({ templateId: t.id }));
-          // create invisible drag image so native ghost doesn't confuse visuals
-          const img = document.createElement('canvas');
-          img.width = 1; img.height = 1;
-          e.dataTransfer.setDragImage(img, 0, 0);
-          dragDropActive = true;
+        // visual selected state
+        if(selectedTemplateId === t.id){
+          div.style.outline = '2px solid #44aa44';
+          div.style.background = '#eefef0';
+        } else {
+          div.style.outline = '';
+          div.style.background = '';
+        }
+        // click to select this template for placement
+        div.addEventListener('click', (ev)=>{
+          ev.stopPropagation();
+          selectedTemplateId = (selectedTemplateId === t.id) ? null : t.id;
+          renderTemplatesList();
         });
-        div.addEventListener('dragend', ()=>{ dragDropActive = false; });
+         const right = document.createElement('div');
+         const del = document.createElement('button'); del.textContent='Del'; del.className='small';
+         del.onclick = (ev)=>{ ev.stopPropagation(); ev.preventDefault(); if(!confirm('Remove template?')) return; templates.splice(i,1); renderTemplatesList(); };
+         right.appendChild(del);
+         div.appendChild(right);
 
-        c.appendChild(div);
-      });
-    }
+         c.appendChild(div);
+       });
+     }
 
     // Editor UI & behaviour
     function renderEditor(){
@@ -331,8 +319,44 @@
       container.className='';
       // controls for canvases in region
       const header = document.createElement('div'); header.style.marginBottom='6px';
-      header.innerHTML = `<div style="font-weight:600">${r.name} — ${r.w}x${r.h}</div>`;
-      container.appendChild(header);
+      // Title + numeric controls for top-left position so region can be moved precisely
+      const title = document.createElement('div');
+      title.style.fontWeight = '600';
+      title.textContent = `${r.name} — ${r.w}x${r.h}`;
+      header.appendChild(title);
+
+      const posRow = document.createElement('div');
+      posRow.style.marginTop = '6px';
+      posRow.style.display = 'flex';
+      posRow.style.gap = '8px';
+      posRow.style.alignItems = 'center';
+
+      const lbl = document.createElement('div'); lbl.className = 'muted'; lbl.style.fontSize='12px'; lbl.textContent = 'Top-left:';
+      const inpX = document.createElement('input');
+      inpX.type = 'number'; inpX.value = r.x; inpX.style.width = '80px';
+      inpX.min = 0; inpX.max = Math.max(0, screenW - r.w);
+      const inpY = document.createElement('input');
+      inpY.type = 'number'; inpY.value = r.y; inpY.style.width = '80px';
+      inpY.min = 0; inpY.max = Math.max(0, screenH - r.h);
+
+      function applyPosFromInputs(){
+        const nx = clamp(parseInt(inpX.value,10) || 0, 0, Math.max(0, screenW - r.w));
+        const ny = clamp(parseInt(inpY.value,10) || 0, 0, Math.max(0, screenH - r.h));
+        r.x = nx; r.y = ny;
+        // reflect any clamping back into inputs
+        inpX.value = r.x; inpY.value = r.y;
+        renderRegionsList(); renderScreen();
+      }
+      inpX.addEventListener('change', applyPosFromInputs);
+      inpY.addEventListener('change', applyPosFromInputs);
+
+      posRow.appendChild(lbl);
+      posRow.appendChild(document.createTextNode('X'));
+      posRow.appendChild(inpX);
+      posRow.appendChild(document.createTextNode('Y'));
+      posRow.appendChild(inpY);
+      header.appendChild(posRow);
+       container.appendChild(header);
 
       const canvList = document.createElement('div');
       r.canvases.forEach((c, ci)=>{
