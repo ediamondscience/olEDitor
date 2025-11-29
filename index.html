@@ -1,0 +1,515 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>OLED Canvas Editor (Web) — Region-based</title>
+  <style>
+    body { font-family: system-ui, Arial; margin: 12px; color:#111; }
+    .row { display:flex; gap:12px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    #screenWrap { position:relative; border:1px solid #888; background:#000; width:fit-content; padding:6px; }
+    #screen { image-rendering:pixelated; display:block; background:#000; }
+    #ui { display:flex; gap:12px; margin-top:12px; }
+    #regionsList, #editor { border:1px solid #bbb; padding:8px; min-width:260px; max-width:420px; background:#f8f8f8; }
+    button { padding:6px 8px; }
+    .regionItem { display:flex; justify-content:space-between; gap:8px; padding:6px 4px; border-bottom:1px solid #eee; }
+    label { font-size:13px; }
+    input[type=number] { width:80px; }
+    .small { font-size:12px; padding:4px 6px; }
+    select { width:100%; }
+    .muted { color:#666; font-size:12px; }
+    .canvasEditor { border:1px solid #444; background:#000; padding:6px; color:#fff; display:inline-block; }
+    /* Templates UI */
+    .templatesList { margin-top:8px; border-top:1px dashed #ddd; padding-top:8px; }
+    .templateItem { display:flex; justify-content:space-between; gap:8px; padding:6px 4px; border-bottom:1px solid #f0f0f0; align-items:center; background:#fff; cursor:grab; }
+    .templateItem:active { cursor:grabbing; }
+    .templateDragHint { font-size:12px; color:#444; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="row controls">
+    <label>Screen W <input id="screenW" type="number" value="128" min="8" max="512"></label>
+    <label>Screen H <input id="screenH" type="number" value="64" min="8" max="512"></label>
+    <label>Scale <input id="screenScale" type="number" value="3" min="1" max="16"></label>
+    <button id="clearRegions" class="small">Clear Regions</button>
+    <button id="exportAll" class="small">Export .h (all regions/canvases)</button>
+    <div class="muted">Drag on the screen to create a named region — or create templates and drop them onto the screen.</div>
+  </div>
+
+  <div id="screenWrap">
+    <canvas id="screen"></canvas>
+  </div>
+
+  <div id="ui">
+    <div id="regionsList">
+      <div style="font-weight:700; margin-bottom:6px;">Regions</div>
+      <div id="regionsContainer"></div>
+
+      <!-- Templates / region sizes -->
+      <div class="templatesList" id="templatesListWrap">
+        <div style="font-weight:700; margin-bottom:6px;">Templates (define sizes and drag onto screen)</div>
+        <div style="display:flex; gap:6px; margin-bottom:6px; align-items:center;">
+          <input id="tmplName" placeholder="name" style="width:36%" />
+          <input id="tmplW" type="number" placeholder="w" min="1" value="24" style="width:22%" />
+          <input id="tmplH" type="number" placeholder="h" min="1" value="16" style="width:22%" />
+          <button id="addTemplate" class="small">Add</button>
+        </div>
+        <div id="templatesContainer" class="muted">No templates yet.</div>
+        <div class="templateDragHint muted">Drag a template onto the preview to place it. Dropped region will be placed at the drop position (clamped to fit)</div>
+      </div>
+
+      <div class="muted" style="margin-top:8px;">Click a region's "Edit" to create canvases for that size. Use "Preview" to toggle a chosen canvas on-screen.</div>
+    </div>
+
+    <div id="editor">
+      <div style="font-weight:700; margin-bottom:6px;">Editor</div>
+      <div id="editorContent" class="muted">No region selected for editing.</div>
+    </div>
+  </div>
+
+  <script>
+    // Data structures
+    const regions = []; // {id, name, x,y,w,h, canvases: [{name, pixels}], previewIndex: int | null, previewOn: bool}
+    const templates = []; // {id, name, w, h}
+    let screenW = 128, screenH = 64, screenScale = 3;
+    const screenCanvas = document.getElementById('screen');
+    const screenCtx = screenCanvas.getContext('2d');
+
+    // selection state
+    let selecting = false;
+    let selStart = null;
+    let selRect = null;
+
+    // editor state
+    let editingRegionId = null;
+    let editingCanvasIndex = null;
+
+    // initialize
+    function init() {
+      screenW = +document.getElementById('screenW').value;
+      screenH = +document.getElementById('screenH').value;
+      screenScale = +document.getElementById('screenScale').value;
+      resizeScreen();
+      renderScreen();
+      attachScreenEvents();
+      renderRegionsList();
+      bindControls();
+      renderTemplatesList();
+
+      // add a couple of example templates
+      addTemplateObj({name:'button', w:24, h:16});
+      addTemplateObj({name:'icon', w:16, h:16});
+      renderTemplatesList();
+    }
+
+    function resizeScreen(){
+      screenCanvas.width = screenW * screenScale;
+      screenCanvas.height = screenH * screenScale;
+      screenCanvas.style.width = (screenCanvas.width)+'px';
+      screenCanvas.style.height = (screenCanvas.height)+'px';
+    }
+
+    function bindControls(){
+      document.getElementById('screenW').addEventListener('change', ()=>{
+        screenW = +document.getElementById('screenW').value; resizeScreen(); renderScreen();
+      });
+      document.getElementById('screenH').addEventListener('change', ()=>{
+        screenH = +document.getElementById('screenH').value; resizeScreen(); renderScreen();
+      });
+      document.getElementById('screenScale').addEventListener('change', ()=>{
+        screenScale = +document.getElementById('screenScale').value; resizeScreen(); renderScreen();
+      });
+      document.getElementById('clearRegions').addEventListener('click', ()=>{
+        if(!confirm('Remove all regions and canvases?')) return;
+        regions.length = 0; editingRegionId=null; editingCanvasIndex=null;
+        renderRegionsList(); renderEditor(); renderScreen();
+      });
+      document.getElementById('exportAll').addEventListener('click', exportAllToHeader);
+      document.getElementById('addTemplate').addEventListener('click', ()=>{
+        const name = (document.getElementById('tmplName').value || '').trim() || `tmpl_${templates.length+1}`;
+        const w = Math.max(1, parseInt(document.getElementById('tmplW').value,10) || 1);
+        const h = Math.max(1, parseInt(document.getElementById('tmplH').value,10) || 1);
+        addTemplateObj({name, w, h});
+        document.getElementById('tmplName').value=''; renderTemplatesList();
+      });
+    }
+
+    function addTemplateObj(t){
+      t.id = Date.now() + Math.floor(Math.random()*999);
+      templates.push(t);
+    }
+
+    // Screen drawing/rendering
+    function renderScreen(){
+      // clear
+      screenCtx.fillStyle = '#000'; screenCtx.fillRect(0,0,screenCanvas.width,screenCanvas.height);
+
+      // optional faint grid (per-pixel)
+      screenCtx.strokeStyle = '#0d0d0d';
+      screenCtx.lineWidth = 1;
+      const ps = screenScale;
+      for(let x=0;x<=screenW;x++){
+        screenCtx.beginPath();
+        screenCtx.moveTo(x*ps+0.5,0);
+        screenCtx.lineTo(x*ps+0.5,screenCanvas.height);
+        screenCtx.stroke();
+      }
+      for(let y=0;y<=screenH;y++){
+        screenCtx.beginPath();
+        screenCtx.moveTo(0,y*ps+0.5);
+        screenCtx.lineTo(screenCanvas.width,y*ps+0.5);
+        screenCtx.stroke();
+      }
+
+      // draw region previews (if enabled)
+      regions.forEach(r=>{
+        // region background
+        screenCtx.fillStyle = 'rgba(80,80,120,0.06)';
+        screenCtx.fillRect(r.x*ps, r.y*ps, r.w*ps, r.h*ps);
+
+        // border
+        screenCtx.strokeStyle = r.id === editingRegionId ? '#ff8800' : '#66aaff';
+        screenCtx.lineWidth = 2;
+        screenCtx.strokeRect(r.x*ps+1, r.y*ps+1, r.w*ps-2, r.h*ps-2);
+
+        // name label
+        screenCtx.fillStyle = '#fff';
+        screenCtx.font = `${Math.max(10,ps*2)}px monospace`;
+        screenCtx.fillText(r.name || ('r'+r.id), r.x*ps+4, r.y*ps+Math.min(16, ps*3));
+
+        // If preview is on and there's a selected canvas, draw it scaled
+        if(r.previewOn && Number.isInteger(r.previewIndex) && r.canvases[r.previewIndex]){
+          drawCanvasPixelsOnScreen(r.canvases[r.previewIndex], r.x, r.y);
+        }
+      });
+
+      // draw selection rectangle if any
+      if(selecting && selRect){
+        screenCtx.fillStyle = 'rgba(255,255,255,0.08)';
+        screenCtx.fillRect(selRect.x*ps, selRect.y*ps, selRect.w*ps, selRect.h*ps);
+        screenCtx.strokeStyle = '#fff';
+        screenCtx.setLineDash([4,4]);
+        screenCtx.lineWidth = 1;
+        screenCtx.strokeRect(selRect.x*ps+0.5, selRect.y*ps+0.5, selRect.w*ps, selRect.h*ps);
+        screenCtx.setLineDash([]);
+      }
+    }
+
+    function drawCanvasPixelsOnScreen(canvasObj, offsetX, offsetY){
+      const ps = screenScale;
+      const pix = canvasObj.pixels;
+      for(let y=0;y<canvasObj.h;y++){
+        for(let x=0;x<canvasObj.w;x++){
+          if(pix[y][x]){
+            screenCtx.fillStyle = '#fff';
+            screenCtx.fillRect((offsetX + x)*ps, (offsetY + y)*ps, ps, ps);
+          } else {
+            // keep background; optionally draw faint pixel when empty
+          }
+        }
+      }
+    }
+
+    // Screen selection events: drag to create region
+    function attachScreenEvents(){
+      // Only support template drag/drop placement. Pointer-based drag-to-create is removed.
+      const screenWrap = document.getElementById('screenWrap');
+
+      // allow drop on the preview area
+      screenWrap.addEventListener('dragover', e=>{ e.preventDefault(); });
+      screenWrap.addEventListener('drop', e=>{
+        e.preventDefault();
+        try {
+          const raw = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+          if(!raw) return;
+          const payload = JSON.parse(raw);
+          if(payload && payload.templateId){
+            const tmpl = templates.find(t=>t.id===payload.templateId);
+            if(!tmpl) return;
+            const rect = screenCanvas.getBoundingClientRect();
+            const cx = Math.floor((e.clientX - rect.left) / screenScale);
+            const cy = Math.floor((e.clientY - rect.top) / screenScale);
+            // clamp so template fits fully on screen
+            const x = clamp(cx, 0, Math.max(0, screenW - tmpl.w));
+            const y = clamp(cy, 0, Math.max(0, screenH - tmpl.h));
+            const id = Date.now() + Math.floor(Math.random()*999);
+            const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, canvases: [], previewIndex: null, previewOn: false };
+            regions.push(region);
+            editingRegionId = id; editingCanvasIndex = null;
+            renderRegionsList(); renderEditor(); renderScreen();
+          }
+        } catch(err){
+          console.warn('drop parse error', err);
+        } finally {
+          dragDropActive = false;
+        }
+      });
+
+      // Keep a flag while dragging templates so other pointer handlers (if added) can avoid interfering
+      screenWrap.addEventListener('dragenter', ()=>{ dragDropActive = true; });
+      screenWrap.addEventListener('dragleave', ()=>{ dragDropActive = false; });
+    }
+
+    let dragDropActive = false;
+
+    // Regions UI
+    function renderRegionsList(){
+      const container = document.getElementById('regionsContainer');
+      container.innerHTML = '';
+      if(regions.length===0){ container.innerHTML = '<div class="muted">No regions defined. Drag on the screen to create one.</div>'; return; }
+      regions.forEach((r, idx)=>{
+        const div = document.createElement('div'); div.className='regionItem';
+        const left = document.createElement('div');
+        left.innerHTML = `<div style="font-weight:600">${r.name}</div><div class="muted">${r.w}x${r.h} @ ${r.x},${r.y}</div>`;
+        const right = document.createElement('div');
+        const editBtn = document.createElement('button'); editBtn.textContent='Edit'; editBtn.className='small';
+        editBtn.onclick = ()=>{ editingRegionId = r.id; editingCanvasIndex = null; renderEditor(); renderScreen(); };
+        const previewBtn = document.createElement('button'); previewBtn.textContent = r.previewOn ? 'Preview: ON' : 'Preview: OFF'; previewBtn.className='small';
+        previewBtn.onclick = ()=>{ r.previewOn = !r.previewOn; renderRegionsList(); renderEditor(); renderScreen(); };
+        const choose = document.createElement('select'); choose.className='small';
+        const defaultOpt = document.createElement('option'); defaultOpt.value='-1'; defaultOpt.textContent='(no canvas)'; choose.appendChild(defaultOpt);
+        r.canvases.forEach((c,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=c.name; if(r.previewIndex===i) o.selected=true; choose.appendChild(o); });
+        choose.onchange = ()=>{ const v = parseInt(choose.value,10); r.previewIndex = Number.isNaN(v) ? null : v; renderScreen(); };
+        const delBtn = document.createElement('button'); delBtn.textContent='Delete'; delBtn.className='small';
+        delBtn.onclick = ()=>{
+          if(!confirm(`Delete region "${r.name}" and its canvases?`)) return;
+          regions.splice(idx,1);
+          if(editingRegionId===r.id){ editingRegionId=null; editingCanvasIndex=null; renderEditor(); }
+          renderRegionsList(); renderScreen();
+        };
+
+        right.appendChild(editBtn);
+        right.appendChild(previewBtn);
+        right.appendChild(choose);
+        right.appendChild(delBtn);
+        div.appendChild(left); div.appendChild(right);
+        container.appendChild(div);
+      });
+    }
+
+    // Templates UI
+    function renderTemplatesList(){
+      const c = document.getElementById('templatesContainer');
+      c.innerHTML = '';
+      if(templates.length===0){ c.className='muted'; c.textContent='No templates yet.'; return; }
+      c.className='';
+      templates.forEach((t, i)=>{
+        const div = document.createElement('div'); div.className='templateItem';
+        div.draggable = true;
+        div.innerHTML = `<div><strong>${t.name}</strong> <span class="muted">${t.w}x${t.h}</span></div>`;
+        const right = document.createElement('div');
+        const del = document.createElement('button'); del.textContent='Del'; del.className='small';
+        del.onclick = (ev)=>{ ev.stopPropagation(); ev.preventDefault(); if(!confirm('Remove template?')) return; templates.splice(i,1); renderTemplatesList(); };
+        right.appendChild(del);
+        div.appendChild(right);
+
+        div.addEventListener('dragstart', (e)=>{
+          e.dataTransfer.setData('application/json', JSON.stringify({ templateId: t.id }));
+          // create invisible drag image so native ghost doesn't confuse visuals
+          const img = document.createElement('canvas');
+          img.width = 1; img.height = 1;
+          e.dataTransfer.setDragImage(img, 0, 0);
+          dragDropActive = true;
+        });
+        div.addEventListener('dragend', ()=>{ dragDropActive = false; });
+
+        c.appendChild(div);
+      });
+    }
+
+    // Editor UI & behaviour
+    function renderEditor(){
+      const container = document.getElementById('editorContent');
+      container.innerHTML = '';
+      if(!editingRegionId){
+        container.className='muted';
+        container.textContent = 'No region selected for editing.';
+        return;
+      }
+      const r = regions.find(rr=>rr.id===editingRegionId);
+      if(!r){ editingRegionId=null; renderEditor(); return; }
+      container.className='';
+      // controls for canvases in region
+      const header = document.createElement('div'); header.style.marginBottom='6px';
+      header.innerHTML = `<div style="font-weight:600">${r.name} — ${r.w}x${r.h}</div>`;
+      container.appendChild(header);
+
+      const canvList = document.createElement('div');
+      r.canvases.forEach((c, ci)=>{
+        const row = document.createElement('div'); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.gap='6px'; row.style.padding='4px 0';
+        const info = document.createElement('div'); info.innerHTML = `<div style="font-weight:600">${c.name}</div><div class="muted">${r.w}x${r.h}</div>`;
+        const btns = document.createElement('div');
+        const open = document.createElement('button'); open.textContent='Open'; open.className='small';
+        open.onclick = ()=>{ editingCanvasIndex = ci; renderEditor(); };
+        const rename = document.createElement('button'); rename.textContent='Rename'; rename.className='small';
+        rename.onclick = ()=>{
+          const nn = prompt('Canvas name:', c.name);
+          if(nn){ c.name = nn; renderRegionsList(); renderEditor(); }
+        };
+        const remove = document.createElement('button'); remove.textContent='Remove'; remove.className='small';
+        remove.onclick = ()=>{
+          if(!confirm(`Remove canvas "${c.name}" ?`)) return;
+          r.canvases.splice(ci,1);
+          if(editingCanvasIndex===ci) editingCanvasIndex=null;
+          renderRegionsList(); renderEditor(); renderScreen();
+        };
+        btns.appendChild(open); btns.appendChild(rename); btns.appendChild(remove);
+        row.appendChild(info); row.appendChild(btns);
+        canvList.appendChild(row);
+      });
+      container.appendChild(canvList);
+
+      const createRow = document.createElement('div'); createRow.style.marginTop='8px';
+      const newNameInput = document.createElement('input'); newNameInput.placeholder='new canvas name'; newNameInput.style.width='60%';
+      const newBtn = document.createElement('button'); newBtn.textContent='Create Canvas'; newBtn.className='small';
+      newBtn.onclick = ()=>{
+        const name = newNameInput.value.trim() || `canvas_${r.canvases.length+1}`;
+        const pix = new Array(r.h).fill(0).map(()=> new Array(r.w).fill(0));
+        r.canvases.push({ name, pixels: pix, w: r.w, h: r.h });
+        editingCanvasIndex = r.canvases.length-1;
+        newNameInput.value='';
+        renderRegionsList(); renderEditor(); renderScreen();
+      };
+      createRow.appendChild(newNameInput); createRow.appendChild(newBtn);
+      container.appendChild(createRow);
+
+      // if a canvas is open for editing, show editor area
+      if(Number.isInteger(editingCanvasIndex) && r.canvases[editingCanvasIndex]){
+        const c = r.canvases[editingCanvasIndex];
+        const sep = document.createElement('div'); sep.style.marginTop='8px'; container.appendChild(sep);
+
+        const editorWrap = document.createElement('div');
+        editorWrap.innerHTML = `<div style="font-weight:600; margin-bottom:6px;">Editing "${c.name}"</div>`;
+        const editorCanvas = document.createElement('canvas');
+        const eps = Math.max(1, Math.min(8, Math.floor(48 / Math.max(r.w, r.h)))); // editor scale heuristic
+        editorCanvas.width = c.w * eps; editorCanvas.height = c.h * eps;
+        editorCanvas.style.width = (c.w*eps)+'px'; editorCanvas.style.height = (c.h*eps)+'px';
+        editorCanvas.className='canvasEditor';
+        editorWrap.appendChild(editorCanvas);
+
+        // editor controls
+        const edControls = document.createElement('div'); edControls.style.marginTop='6px';
+        const clearBtn = document.createElement('button'); clearBtn.textContent='Clear'; clearBtn.className='small';
+        clearBtn.onclick = ()=>{ for(let y=0;y<c.h;y++) for(let x=0;x<c.w;x++) c.pixels[y][x]=0; renderEditor(); renderScreen(); };
+        const invertBtn = document.createElement('button'); invertBtn.textContent='Invert'; invertBtn.className='small';
+        invertBtn.onclick = ()=>{ for(let y=0;y<c.h;y++) for(let x=0;x<c.w;x++) c.pixels[y][x] = c.pixels[y][x] ? 0 : 1; renderEditor(); renderScreen(); };
+        const exportBtn = document.createElement('button'); exportBtn.textContent='Export Canvas'; exportBtn.className='small';
+        exportBtn.onclick = ()=>{ downloadHeaderForSingle(r, editingCanvasIndex); };
+        edControls.appendChild(clearBtn); edControls.appendChild(invertBtn); edControls.appendChild(exportBtn);
+        editorWrap.appendChild(edControls);
+
+        container.appendChild(editorWrap);
+
+        // attach drawing logic and render
+        attachEditorDrawing(editorCanvas, c, eps, ()=>{ renderEditor(); renderScreen(); });
+      }
+    }
+
+    function attachEditorDrawing(canvas, canvasObj, scale, onChange){
+      const ctx = canvas.getContext('2d');
+      function render(){
+        ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        for(let y=0;y<canvasObj.h;y++){
+          for(let x=0;x<canvasObj.w;x++){
+            if(canvasObj.pixels[y][x]){
+              ctx.fillStyle = '#fff';
+              ctx.fillRect(x*scale, y*scale, scale, scale);
+            } else {
+              ctx.fillStyle = '#202020';
+              ctx.fillRect(x*scale, y*scale, scale, scale);
+            }
+          }
+        }
+        // grid
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        for(let x=0;x<=canvasObj.w;x++){ ctx.beginPath(); ctx.moveTo(x*scale+0.5,0); ctx.lineTo(x*scale+0.5, canvas.height); ctx.stroke(); }
+        for(let y=0;y<=canvasObj.h;y++){ ctx.beginPath(); ctx.moveTo(0,y*scale+0.5); ctx.lineTo(canvas.width, y*scale+0.5); ctx.stroke(); }
+      }
+      let drawing=false, mode=true;
+      function posFromEvent(e){
+        const r = canvas.getBoundingClientRect();
+        const cx = Math.floor((e.clientX - r.left)/scale);
+        const cy = Math.floor((e.clientY - r.top)/scale);
+        return {x: clamp(cx,0,canvasObj.w-1), y: clamp(cy,0,canvasObj.h-1)};
+      }
+      canvas.onpointerdown = e=>{
+        drawing=true; canvas.setPointerCapture(e.pointerId); mode = (e.button===0);
+        const p = posFromEvent(e); canvasObj.pixels[p.y][p.x] = mode?1:0; render(); if(onChange) onChange();
+      };
+      canvas.onpointermove = e=>{ if(!drawing) return; const p=posFromEvent(e); canvasObj.pixels[p.y][p.x] = mode?1:0; render(); if(onChange) onChange(); };
+      canvas.onpointerup = e=>{ drawing=false; try{ canvas.releasePointerCapture(e.pointerId);}catch{}; };
+      render();
+    }
+
+    // Utils
+    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+    // Export functions
+    function packFrameBytes(pixels, w, h){
+      const paddedH = Math.ceil(h/8)*8;
+      const pages = paddedH/8;
+      const out = [];
+      for(let x=0;x<w;x++){
+        for(let page=0; page<pages; page++){
+          let b = 0;
+          for(let bit=0; bit<8; bit++){
+            const y = page*8 + bit;
+            if(y < h && pixels[y][x]) b |= (1<<bit);
+          }
+          out.push(b);
+        }
+      }
+      return { bytes: out, w, h: paddedH };
+    }
+
+    function exportAllToHeader(){
+      if(regions.length===0){ alert('No regions to export'); return; }
+      let header = `// Generated by OLED Canvas Editor (web)\n#include <stdint.h>\n\n`;
+      regions.forEach((r,ri)=>{
+        r.canvases.forEach((c,ci)=>{
+          const p = packFrameBytes(c.pixels, c.w, c.h);
+          const name = `${sanitize(r.name)}_${sanitize(c.name)}_r${ri}_c${ci}`;
+          header += `// region "${r.name}" (${r.w}x${r.h}) at ${r.x},${r.y}  canvas "${c.name}"\n`;
+          header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
+          header += `const uint8_t ${name}[] = { \n    `;
+          p.bytes.forEach((b, idx)=>{
+            header += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
+            if(idx < p.bytes.length-1) header += ', ';
+            if((idx+1)%16===0) header += '\n    ';
+          });
+          header += '\n};\n\n';
+        });
+      });
+      downloadText('images_all.h', header);
+    }
+
+    function downloadText(filename, text){
+      const blob = new Blob([text], {type:'text/plain'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function sanitize(s){ return s.replace(/[^\w]/g,'_'); }
+
+    function downloadHeaderForSingle(region, cindex){
+      const c = region.canvases[cindex];
+      const p = packFrameBytes(c.pixels, c.w, c.h);
+      const name = `${sanitize(region.name)}_${sanitize(c.name)}`;
+      let header = `// region "${region.name}" (${region.w}x${region.h}) canvas "${c.name}"\n#include <stdint.h>\n\n`;
+      header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
+      header += `const uint8_t ${name}[] = { \n    `;
+      p.bytes.forEach((b, idx)=>{
+        header += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
+        if(idx < p.bytes.length-1) header += ', ';
+        if((idx+1)%16===0) header += '\n    ';
+      });
+      header += '\n};\n';
+      downloadText(name + '.h', header);
+    }
+
+    // start
+    init();
+  </script>
+</body>
+</html>
