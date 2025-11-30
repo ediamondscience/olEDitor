@@ -456,16 +456,6 @@
 
         // editor controls
         const edControls = document.createElement('div'); edControls.style.marginTop='6px';
-        // draw mode selector: choose whether drawing sets pixel=1 (light) or pixel=0 (dark/erase)
-        const drawModeLabel = document.createElement('label');
-        drawModeLabel.style.marginRight = '8px';
-        drawModeLabel.className = 'muted';
-        drawModeLabel.textContent = 'Draw:';
-        const drawModeSelect = document.createElement('select');
-        drawModeSelect.style.marginLeft = '6px';
-        drawModeSelect.innerHTML = `<option value="1">Light (set)</option><option value="0">Dark (clear)</option>`;
-        drawModeLabel.appendChild(drawModeSelect);
-        edControls.appendChild(drawModeLabel);
          const clearBtn = document.createElement('button'); clearBtn.textContent='Clear'; clearBtn.className='small';
          clearBtn.onclick = ()=>{ for(let y=0;y<c.h;y++) for(let x=0;x<c.w;x++) c.pixels[y][x]=0; renderEditor(); renderScreen(); };
          const invertBtn = document.createElement('button'); invertBtn.textContent='Invert'; invertBtn.className='small';
@@ -477,19 +467,24 @@
 
         container.appendChild(editorWrap);
 
-        // attach drawing logic and render
-        // pass a getter so the drawing function uses the selected draw mode (1=set, 0=clear)
-        attachEditorDrawing(editorCanvas, c, eps, ()=>{ renderEditor(); renderScreen(); }, ()=> Number(drawModeSelect.value) );
+        // attach drawing logic and render (simple draw mode only: left-click draws)
+        attachEditorDrawing(editorCanvas, c, eps, ()=>{ renderEditor(); renderScreen(); } );
       }
     }
-
+    
     function attachEditorDrawing(canvas, canvasObj, scale, onChange, getDrawValue){
-      const ctx = canvas.getContext('2d');
+      // Attach stable handlers once. handlers will query the current canvas object via
+      // a getter stored on the canvas element so re-rendering doesn't rebind listeners.
+      canvas._getCanvasObj = () => canvasObj;
+ 
+       const ctx = canvas.getContext('2d');
+
       function render(){
+        const cur = (typeof canvas._getCanvasObj === 'function') ? canvas._getCanvasObj() : canvasObj;
         ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
-        for(let y=0;y<canvasObj.h;y++){
-          for(let x=0;x<canvasObj.w;x++){
-            if(canvasObj.pixels[y][x]){
+        for(let y=0;y<cur.h;y++){
+          for(let x=0;x<cur.w;x++){
+            if(cur.pixels[y][x]){
               ctx.fillStyle = '#fff';
               ctx.fillRect(x*scale, y*scale, scale, scale);
             } else {
@@ -500,73 +495,102 @@
         }
         // grid
         ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-        for(let x=0;x<=canvasObj.w;x++){ ctx.beginPath(); ctx.moveTo(x*scale+0.5,0); ctx.lineTo(x*scale+0.5, canvas.height); ctx.stroke(); }
-        for(let y=0;y<=canvasObj.h;y++){ ctx.beginPath(); ctx.moveTo(0,y*scale+0.5); ctx.lineTo(canvas.width, y*scale+0.5); ctx.stroke(); }
+        ctx.beginPath();
+        for(let x=0;x<=cur.w;x++){ ctx.moveTo(x*scale+0.5,0); ctx.lineTo(x*scale+0.5, canvas.height); }
+        for(let y=0;y<=cur.h;y++){ ctx.moveTo(0,y*scale+0.5); ctx.lineTo(canvas.width, y*scale+0.5); }
+        ctx.stroke();
       }
 
-      let drawing=false, activePointerId=null;
-
-      function posFromEvent(e){
-        // map pointer coordinates to canvas pixel coords robustly (handles CSS padding / high-DPI)
+      function getGridPosFromEvent(e){
         const r = canvas.getBoundingClientRect();
-        const relX = (e.clientX - r.left);
-        const relY = (e.clientY - r.top);
-        const cx = Math.floor(relX * (canvas.width / r.width));
-        const cy = Math.floor(relY * (canvas.height / r.height));
-        return { x: clamp(cx, 0, canvasObj.w - 1), y: clamp(cy, 0, canvasObj.h - 1) };
+        const relX = e.clientX - r.left;
+        const relY = e.clientY - r.top;
+        const cur = (typeof canvas._getCanvasObj === 'function') ? canvas._getCanvasObj() : canvasObj;
+        // map to grid coordinates (0..w-1 / 0..h-1)
+        const gx = Math.floor(relX * (cur.w / r.width));
+        const gy = Math.floor(relY * (cur.h / r.height));
+        return { x: clamp(gx, 0, cur.w-1), y: clamp(gy, 0, cur.h-1) };
       }
 
-      function setPixelIfChanged(x,y,val){
-        if(canvasObj.pixels[y][x] !== val){
-          canvasObj.pixels[y][x] = val;
+      function setPixelIfChanged(cur, x, y, val){
+        if(cur.pixels[y][x] !== val){
+          cur.pixels[y][x] = val;
           render();
           if(onChange) onChange();
         }
       }
 
-      // Use pointer capture + window-level move/up handlers so moves are delivered reliably on all devices.
-      // Do not let the draw-mode control steal pointer events; getDrawValue is read but does not alter event handling.
-      const moveHandler = (e) => {
-        if(!drawing) return;
-        if(activePointerId !== null && e.pointerId !== activePointerId) return;
-        // compute write value (respect current UI selection)
-        const writeVal = (typeof getDrawValue === 'function') ? Number(getDrawValue()) : ((e.buttons & 1) ? 1 : 0);
-        const p = posFromEvent(e);
-        setPixelIfChanged(p.x, p.y, writeVal);
-      };
-
-      const upHandler = (e) => {
-        if(activePointerId === e.pointerId){
-          drawing = false;
-          try{ canvas.releasePointerCapture(e.pointerId); }catch{}
-          activePointerId = null;
-          window.removeEventListener('pointermove', moveHandler, {passive:false});
-          window.removeEventListener('pointerup', upHandler, {passive:false});
-          window.removeEventListener('pointercancel', upHandler, {passive:false});
+      // Bresenham line to fill gaps while dragging between pixels
+      function drawLine(cur, x0, y0, x1, y1, val){
+        let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        let dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        let err = dx + dy;
+        while(true){
+          setPixelIfChanged(cur, x0, y0, val);
+          if(x0 === x1 && y0 === y1) break;
+          const e2 = 2*err;
+          if(e2 >= dy){ err += dy; x0 += sx; }
+          if(e2 <= dx){ err += dx; y0 += sy; }
         }
-      };
+      }
 
-      const downHandler = (e) => {
-        // start drawing
-        e.preventDefault();
-        drawing = true;
-        activePointerId = e.pointerId;
-        try{ canvas.setPointerCapture(activePointerId); }catch{}
-        const writeVal = (typeof getDrawValue === 'function') ? Number(getDrawValue()) : (e.button===0 ? 1 : 0);
-        const p = posFromEvent(e);
-        setPixelIfChanged(p.x, p.y, writeVal);
-        // install global move/up so dragging stays responsive even if pointer leaves canvas
-        window.addEventListener('pointermove', moveHandler, {passive:false});
-        window.addEventListener('pointerup', upHandler, {passive:false});
-        window.addEventListener('pointercancel', upHandler, {passive:false});
-      };
+      // stable per-canvas state
+      if(!canvas._handlersAttached){
+        canvas._drawing = false;
+        canvas._pointerId = null;
+        canvas._last = null;
 
-      // attach initial listener on canvas (non-passive so preventDefault works on touch)
-      canvas.addEventListener('pointerdown', downHandler, { passive: false });
+        const down = (e) => {
+          e.preventDefault();
+          canvas._drawing = true;
+          canvas._pointerId = e.pointerId;
+          try{ canvas.setPointerCapture(e.pointerId); }catch{}
+          const cur = canvas._getCanvasObj();
+          // simple behaviour: left-click draws (1), other buttons clear (0)
+          const drawVal = (e.button === 0) ? 1 : 0;
+          const p = getGridPosFromEvent(e);
+          drawLine(cur, p.x, p.y, p.x, p.y, drawVal);
+          canvas._last = p;
+        };
 
-      // render initial state
-      render();
-    }
+        const move = (e) => {
+          if(!canvas._drawing) return;
+          if(canvas._pointerId !== null && e.pointerId !== canvas._pointerId) return;
+          e.preventDefault();
+          const cur = canvas._getCanvasObj();
+          // while dragging, use left-button state to decide drawing
+          const drawVal = ((e.buttons & 1) ? 1 : 0);
+          const p = getGridPosFromEvent(e);
+          if(canvas._last){
+            drawLine(cur, canvas._last.x, canvas._last.y, p.x, p.y, drawVal);
+          } else {
+            drawLine(cur, p.x, p.y, p.x, p.y, drawVal);
+          }
+          canvas._last = p;
+        };
+
+        const up = (e) => {
+          if(canvas._pointerId !== null && e.pointerId !== canvas._pointerId) return;
+          canvas._drawing = false;
+          canvas._pointerId = null;
+          canvas._last = null;
+          try{ canvas.releasePointerCapture(e.pointerId); }catch{}
+        };
+
+        canvas.addEventListener('pointerdown', down, { passive: false });
+        canvas.addEventListener('pointermove', move, { passive: false });
+        canvas.addEventListener('pointerup', up, { passive: false });
+        canvas.addEventListener('pointercancel', up, { passive: false });
+
+        canvas._handlersAttached = true;
+      } else {
+        // update getter to point at the new object (no rebind)
+        canvas._getCanvasObj = () => canvasObj;
+      }
+
+       // initial draw
+       render();
+     }
 
     // Utils
     function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
