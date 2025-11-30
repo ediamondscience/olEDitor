@@ -225,6 +225,11 @@
         // clamp so template fits fully on screen
         const x = clamp(cx, 0, Math.max(0, screenW - tmpl.w));
         const y = clamp(cy, 0, Math.max(0, screenH - tmpl.h));
+        // bounds check: region must fit fully inside screen
+        if (x < 0 || y < 0 || x + tmpl.w > screenW || y + tmpl.h > screenH) {
+          alert('Region would be out of bounds. Please select a valid position.');
+          return;
+        }
         const id = Date.now() + Math.floor(Math.random()*999);
         const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, canvases: [], previewIndex: null, previewOn: false };
         regions.push(region);
