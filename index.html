@@ -9,7 +9,7 @@
     .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     #screenWrap { position:relative; border:1px solid #888; background:transparent; width:fit-content; padding:0; }
     #screen { image-rendering:pixelated; display:block; background:transparent; }
-    #ui { display:flex; gap:12px; margin-top:12px; }
+    #ui { display:flex; gap:32px; margin-top:12px; align-items: flex-start; }
     #regionsList, #editor { border:1px solid #bbb; padding:8px; min-width:260px; max-width:420px; background:#f8f8f8; }
     button { padding:6px 8px; }
     .regionItem { display:flex; justify-content:space-between; gap:8px; padding:6px 4px; border-bottom:1px solid #eee; }
@@ -18,12 +18,14 @@
     .small { font-size:12px; padding:4px 6px; }
     select { width:100%; }
     .muted { color:#666; font-size:12px; }
-    .canvasEditor { border:1px solid #444; background:#000; padding:6px; color:#fff; display:inline-block; }
+    .canvasEditor { border:1px solid #444; background:#000; padding:6px; color:#fff; display:block; margin:0 auto; }
     /* Templates UI */
     .templatesList { margin-top:8px; border-top:1px dashed #ddd; padding-top:8px; }
     .templateItem { display:flex; justify-content:space-between; gap:8px; padding:6px 4px; border-bottom:1px solid #f0f0f0; align-items:center; background:#fff; cursor:grab; }
     .templateItem:active { cursor:grabbing; }
     .templateDragHint { font-size:12px; color:#444; margin-top:6px; }
+    #editor { flex: 1 1 0; min-width: 320px; max-width: none; }
+    #editorContent { width: 100%; }
   </style>
 </head>
 <body>
@@ -69,8 +71,8 @@
 
   <script>
     // Data structures
-    const regions = []; // {id, name, x,y,w,h, canvases: [{name, pixels}], previewIndex: int | null, previewOn: bool}
-    const templates = []; // {id, name, w, h}
+    const templates = []; // {id, name, w, h, canvases: [{name, pixels, w, h}]}
+    const regions = []; // {id, name, x,y,w,h, templateId, previewIndex: int | null, previewOn: bool}
     let screenW = 128, screenH = 64, screenScale = 3;
     let selectedTemplateId = null;
     const screenCanvas = document.getElementById('screen');
@@ -137,78 +139,8 @@
 
     function addTemplateObj(t){
       t.id = Date.now() + Math.floor(Math.random()*999);
+      t.canvases = [];
       templates.push(t);
-    }
-
-    // Screen drawing/rendering
-    function renderScreen(){
-      // clear
-      screenCtx.fillStyle = '#000'; screenCtx.fillRect(0,0,screenCanvas.width,screenCanvas.height);
-
-      // optional faint grid (per-pixel)
-      screenCtx.strokeStyle = '#0d0d0d';
-      screenCtx.lineWidth = 1;
-      const ps = screenScale;
-      for(let x=0;x<=screenW;x++){
-        screenCtx.beginPath();
-        screenCtx.moveTo(x*ps+0.5,0);
-        screenCtx.lineTo(x*ps+0.5,screenCanvas.height);
-        screenCtx.stroke();
-      }
-      for(let y=0;y<=screenH;y++){
-        screenCtx.beginPath();
-        screenCtx.moveTo(0,y*ps+0.5);
-        screenCtx.lineTo(screenCanvas.width,y*ps+0.5);
-        screenCtx.stroke();
-      }
-
-      // draw region previews (if enabled)
-      regions.forEach(r=>{
-        // region background
-        screenCtx.fillStyle = 'rgba(80,80,120,0.06)';
-        screenCtx.fillRect(r.x*ps, r.y*ps, r.w*ps, r.h*ps);
-
-        // border
-        screenCtx.strokeStyle = r.id === editingRegionId ? '#ff8800' : '#66aaff';
-        screenCtx.lineWidth = 2;
-        screenCtx.strokeRect(r.x*ps+1, r.y*ps+1, r.w*ps-2, r.h*ps-2);
-
-        // name label
-        screenCtx.fillStyle = '#fff';
-        screenCtx.font = `${Math.max(10,ps*2)}px monospace`;
-        screenCtx.fillText(r.name || ('r'+r.id), r.x*ps+4, r.y*ps+Math.min(16, ps*3));
-
-        // If preview is on and there's a selected canvas, draw it scaled
-        if(r.previewOn && Number.isInteger(r.previewIndex) && r.canvases[r.previewIndex]){
-          drawCanvasPixelsOnScreen(r.canvases[r.previewIndex], r.x, r.y);
-        }
-      });
-
-      // draw selection rectangle if any
-      if(selecting && selRect){
-        screenCtx.fillStyle = 'rgba(255,255,255,0.08)';
-        screenCtx.fillRect(selRect.x*ps, selRect.y*ps, selRect.w*ps, selRect.h*ps);
-        screenCtx.strokeStyle = '#fff';
-        screenCtx.setLineDash([4,4]);
-        screenCtx.lineWidth = 1;
-        screenCtx.strokeRect(selRect.x*ps+0.5, selRect.y*ps+0.5, selRect.w*ps, selRect.h*ps);
-        screenCtx.setLineDash([]);
-      }
-    }
-
-    function drawCanvasPixelsOnScreen(canvasObj, offsetX, offsetY){
-      const ps = screenScale;
-      const pix = canvasObj.pixels;
-      for(let y=0;y<canvasObj.h;y++){
-        for(let x=0;x<canvasObj.w;x++){
-          if(pix[y][x]){
-            screenCtx.fillStyle = '#fff';
-            screenCtx.fillRect((offsetX + x)*ps, (offsetY + y)*ps, ps, ps);
-          } else {
-            // keep background; optionally draw faint pixel when empty
-          }
-        }
-      }
     }
 
     // Screen selection events: click to place selected template (top-left)
@@ -231,7 +163,7 @@
           return;
         }
         const id = Date.now() + Math.floor(Math.random()*999);
-        const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, canvases: [], previewIndex: null, previewOn: false };
+        const region = { id, name: `${tmpl.name}`, x, y, w: tmpl.w, h: tmpl.h, templateId: tmpl.id, previewIndex: null, previewOn: false };
         regions.push(region);
         editingRegionId = id; editingCanvasIndex = null;
         // clear selection after placement
@@ -256,9 +188,19 @@
         editBtn.onclick = ()=>{ editingRegionId = r.id; editingCanvasIndex = null; renderEditor(); renderScreen(); };
         const previewBtn = document.createElement('button'); previewBtn.textContent = r.previewOn ? 'Preview: ON' : 'Preview: OFF'; previewBtn.className='small';
         previewBtn.onclick = ()=>{ r.previewOn = !r.previewOn; renderRegionsList(); renderEditor(); renderScreen(); };
+        // Populate preview dropdown from template canvases
+        const tmpl = templates.find(t=>t.id===r.templateId);
         const choose = document.createElement('select'); choose.className='small';
         const defaultOpt = document.createElement('option'); defaultOpt.value='-1'; defaultOpt.textContent='(no canvas)'; choose.appendChild(defaultOpt);
-        r.canvases.forEach((c,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=c.name; if(r.previewIndex===i) o.selected=true; choose.appendChild(o); });
+        if (tmpl && tmpl.canvases.length > 0) {
+          tmpl.canvases.forEach((c,i)=>{
+            const o=document.createElement('option');
+            o.value=i;
+            o.textContent=c.name;
+            if(r.previewIndex===i) o.selected=true;
+            choose.appendChild(o);
+          });
+        }
         choose.onchange = ()=>{ const v = parseInt(choose.value,10); r.previewIndex = Number.isNaN(v) ? null : v; renderScreen(); };
         const delBtn = document.createElement('button'); delBtn.textContent='Delete'; delBtn.className='small';
         delBtn.onclick = ()=>{
@@ -300,15 +242,38 @@
           selectedTemplateId = (selectedTemplateId === t.id) ? null : t.id;
           renderTemplatesList();
         });
-         const right = document.createElement('div');
-         const del = document.createElement('button'); del.textContent='Del'; del.className='small';
-         del.onclick = (ev)=>{ ev.stopPropagation(); ev.preventDefault(); if(!confirm('Remove template?')) return; templates.splice(i,1); renderTemplatesList(); };
-         right.appendChild(del);
-         div.appendChild(right);
+        const right = document.createElement('div');
+        const del = document.createElement('button'); del.textContent='Del'; del.className='small';
+        del.onclick = (ev)=>{
+          ev.stopPropagation(); ev.preventDefault();
+          // Find regions using this template
+          const regionsUsing = regions.filter(r => r.templateId === t.id);
+          let msg = `Remove template "${t.name}"?`;
+          if(regionsUsing.length > 0){
+            msg += `\n\nThis will also delete ${regionsUsing.length} region(s) that use this template.`;
+          }
+          if(!confirm(msg)) return;
+          // Remove regions using this template
+          for(let j=regions.length-1; j>=0; j--){
+            if(regions[j].templateId === t.id){
+              regions.splice(j,1);
+            }
+          }
+          // Remove template
+          templates.splice(i,1);
+          // Reset editing state if needed
+          if(selectedTemplateId === t.id) selectedTemplateId = null;
+          if(editingRegionId && regions.findIndex(r=>r.id===editingRegionId) === -1){
+            editingRegionId = null; editingCanvasIndex = null;
+          }
+          renderTemplatesList(); renderRegionsList(); renderEditor(); renderScreen();
+        };
+        right.appendChild(del);
+        div.appendChild(right);
 
-         c.appendChild(div);
-       });
-     }
+        c.appendChild(div);
+      });
+    }
 
     // Editor UI & behaviour
     function renderEditor(){
@@ -348,7 +313,6 @@
         const nx = clamp(parseInt(inpX.value,10) || 0, 0, Math.max(0, screenW - r.w));
         const ny = clamp(parseInt(inpY.value,10) || 0, 0, Math.max(0, screenH - r.h));
         r.x = nx; r.y = ny;
-        // reflect any clamping back into inputs
         inpX.value = r.x; inpY.value = r.y;
         renderRegionsList(); renderScreen();
       }
@@ -361,41 +325,44 @@
       posRow.appendChild(document.createTextNode('Y'));
       posRow.appendChild(inpY);
       header.appendChild(posRow);
-       container.appendChild(header);
+      container.appendChild(header);
 
-      const canvList = document.createElement('div');
-      r.canvases.forEach((c, ci)=>{
-        const row = document.createElement('div'); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.gap='6px'; row.style.padding='4px 0';
-        const info = document.createElement('div'); info.innerHTML = `<div style="font-weight:600">${c.name}</div><div class="muted">${r.w}x${r.h}</div>`;
-        const btns = document.createElement('div');
-        const open = document.createElement('button'); open.textContent='Open'; open.className='small';
-        open.onclick = ()=>{ editingCanvasIndex = ci; renderEditor(); };
-        const rename = document.createElement('button'); rename.textContent='Rename'; rename.className='small';
-        rename.onclick = ()=>{
-          const nn = prompt('Canvas name:', c.name);
-          if(nn){ c.name = nn; renderRegionsList(); renderEditor(); }
-        };
-        const remove = document.createElement('button'); remove.textContent='Remove'; remove.className='small';
-        remove.onclick = ()=>{
-          if(!confirm(`Remove canvas "${c.name}" ?`)) return;
-          r.canvases.splice(ci,1);
-          if(editingCanvasIndex===ci) editingCanvasIndex=null;
-          renderRegionsList(); renderEditor(); renderScreen();
-        };
-        btns.appendChild(open); btns.appendChild(rename); btns.appendChild(remove);
-        row.appendChild(info); row.appendChild(btns);
-        canvList.appendChild(row);
-      });
-      container.appendChild(canvList);
+     // Editor for template canvases
+     const tmpl = templates.find(t=>t.id===r.templateId);
+     if (!tmpl) return;
+     const canvList = document.createElement('div');
+     tmpl.canvases.forEach((c, ci)=>{
+       const row = document.createElement('div'); row.style.display='flex'; row.style.justifyContent='space-between'; row.style.gap='6px'; row.style.padding='4px 0';
+       const info = document.createElement('div'); info.innerHTML = `<div style="font-weight:600">${c.name}</div><div class="muted">${tmpl.w}x${tmpl.h}</div>`;
+       const btns = document.createElement('div');
+       const open = document.createElement('button'); open.textContent='Open'; open.className='small';
+       open.onclick = ()=>{ editingCanvasIndex = ci; renderEditor(); };
+       const rename = document.createElement('button'); rename.textContent='Rename'; rename.className='small';
+       rename.onclick = ()=>{
+         const nn = prompt('Canvas name:', c.name);
+         if(nn){ c.name = nn; renderRegionsList(); renderEditor(); }
+       };
+       const remove = document.createElement('button'); remove.textContent='Remove'; remove.className='small';
+       remove.onclick = ()=>{
+         if(!confirm(`Remove canvas "${c.name}" ?`)) return;
+         tmpl.canvases.splice(ci,1);
+         if(editingCanvasIndex===ci) editingCanvasIndex=null;
+         renderRegionsList(); renderEditor(); renderScreen();
+       };
+       btns.appendChild(open); btns.appendChild(rename); btns.appendChild(remove);
+       row.appendChild(info); row.appendChild(btns);
+       canvList.appendChild(row);
+     });
+     container.appendChild(canvList);
 
       const createRow = document.createElement('div'); createRow.style.marginTop='8px';
       const newNameInput = document.createElement('input'); newNameInput.placeholder='new canvas name'; newNameInput.style.width='60%';
       const newBtn = document.createElement('button'); newBtn.textContent='Create Canvas'; newBtn.className='small';
       newBtn.onclick = ()=>{
-        const name = newNameInput.value.trim() || `canvas_${r.canvases.length+1}`;
-        const pix = new Array(r.h).fill(0).map(()=> new Array(r.w).fill(0));
-        r.canvases.push({ name, pixels: pix, w: r.w, h: r.h });
-        editingCanvasIndex = r.canvases.length-1;
+        const name = newNameInput.value.trim() || `canvas_${tmpl.canvases.length+1}`;
+        const pix = new Array(tmpl.h).fill(0).map(()=> new Array(tmpl.w).fill(0));
+        tmpl.canvases.push({ name, pixels: pix, w: tmpl.w, h: tmpl.h });
+        editingCanvasIndex = tmpl.canvases.length-1;
         newNameInput.value='';
         renderRegionsList(); renderEditor(); renderScreen();
       };
@@ -403,14 +370,15 @@
       container.appendChild(createRow);
 
       // if a canvas is open for editing, show editor area
-      if(Number.isInteger(editingCanvasIndex) && r.canvases[editingCanvasIndex]){
-        const c = r.canvases[editingCanvasIndex];
-        const sep = document.createElement('div'); sep.style.marginTop='8px'; container.appendChild(sep);
+     if(Number.isInteger(editingCanvasIndex) && tmpl.canvases[editingCanvasIndex]){
+       const c = tmpl.canvases[editingCanvasIndex];
+       const sep = document.createElement('div'); sep.style.marginTop='8px'; container.appendChild(sep);
 
         const editorWrap = document.createElement('div');
         editorWrap.innerHTML = `<div style="font-weight:600; margin-bottom:6px;">Editing "${c.name}"</div>`;
         const editorCanvas = document.createElement('canvas');
-        const eps = Math.max(1, Math.min(8, Math.floor(48 / Math.max(r.w, r.h)))); // editor scale heuristic
+        // Scale the editor canvas to match the main display scale
+        const eps = screenScale;
         editorCanvas.width = c.w * eps; editorCanvas.height = c.h * eps;
         editorCanvas.style.width = (c.w*eps)+'px'; editorCanvas.style.height = (c.h*eps)+'px';
         editorCanvas.className='canvasEditor';
@@ -423,7 +391,7 @@
         const invertBtn = document.createElement('button'); invertBtn.textContent='Invert'; invertBtn.className='small';
         invertBtn.onclick = ()=>{ for(let y=0;y<c.h;y++) for(let x=0;x<c.w;x++) c.pixels[y][x] = c.pixels[y][x] ? 0 : 1; renderEditor(); renderScreen(); };
         const exportBtn = document.createElement('button'); exportBtn.textContent='Export Canvas'; exportBtn.className='small';
-        exportBtn.onclick = ()=>{ downloadHeaderForSingle(r, editingCanvasIndex); };
+        exportBtn.onclick = ()=>{ downloadHeaderForSingle(c, c.name); };
         edControls.appendChild(clearBtn); edControls.appendChild(invertBtn); edControls.appendChild(exportBtn);
         editorWrap.appendChild(edControls);
 
@@ -491,41 +459,74 @@
       return { bytes: out, w, h: paddedH };
     }
 
-    function exportAllToHeader(){
-      if(regions.length===0){ alert('No regions to export'); return; }
-      let header = `// Generated by OLED Canvas Editor (web)\n#include <stdint.h>\n\n`;
-      regions.forEach((r,ri)=>{
-        r.canvases.forEach((c,ci)=>{
-          const p = packFrameBytes(c.pixels, c.w, c.h);
-          const name = `${sanitize(r.name)}_${sanitize(c.name)}_r${ri}_c${ci}`;
-          header += `// region "${r.name}" (${r.w}x${r.h}) at ${r.x},${r.y}  canvas "${c.name}"\n`;
-          header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
-          header += `const uint8_t ${name}[] = { \n    `;
-          p.bytes.forEach((b, idx)=>{
-            header += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
-            if(idx < p.bytes.length-1) header += ', ';
-            if((idx+1)%16===0) header += '\n    ';
-          });
-          header += '\n};\n\n';
-        });
-      });
-      downloadText('images_all.h', header);
+    // Fix: Render the canvas preview on the main screen using template canvases
+function renderScreen(){
+  // clear
+  screenCtx.fillStyle = '#000'; screenCtx.fillRect(0,0,screenCanvas.width,screenCanvas.height);
+
+  // optional faint grid (per-pixel)
+  screenCtx.strokeStyle = '#0d0d0d';
+  screenCtx.lineWidth = 1;
+  const ps = screenScale;
+  for(let x=0;x<=screenW;x++){
+    screenCtx.beginPath();
+    screenCtx.moveTo(x*ps+0.5,0);
+    screenCtx.lineTo(x*ps+0.5,screenCanvas.height);
+    screenCtx.stroke();
+  }
+  for(let y=0;y<=screenH;y++){
+    screenCtx.beginPath();
+    screenCtx.moveTo(0,y*ps+0.5);
+    screenCtx.lineTo(screenCanvas.width,y*ps+0.5);
+    screenCtx.stroke();
+  }
+
+  // draw region previews (if enabled)
+  regions.forEach(r=>{
+    // region background
+    screenCtx.fillStyle = 'rgba(80,80,120,0.06)';
+    screenCtx.fillRect(r.x*ps, r.y*ps, r.w*ps, r.h*ps);
+
+    // border
+    screenCtx.strokeStyle = r.id === editingRegionId ? '#ff8800' : '#66aaff';
+    screenCtx.lineWidth = 2;
+    screenCtx.strokeRect(r.x*ps+1, r.y*ps+1, r.w*ps-2, r.h*ps-2);
+
+    // name label
+    screenCtx.fillStyle = '#fff';
+    screenCtx.font = `${Math.max(10,ps*2)}px monospace`;
+    screenCtx.fillText(r.name || ('r'+r.id), r.x*ps+4, r.y*ps+Math.min(16, ps*3));
+
+    // Fix: Use template canvases for preview
+    const tmpl = templates.find(t=>t.id===r.templateId);
+    if(r.previewOn && tmpl && Number.isInteger(r.previewIndex) && tmpl.canvases[r.previewIndex]){
+      drawCanvasPixelsOnScreen(tmpl.canvases[r.previewIndex], r.x, r.y);
     }
+  });
+}
 
-    function downloadText(filename, text){
-      const blob = new Blob([text], {type:'text/plain'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
+// Fix: drawCanvasPixelsOnScreen must exist
+function drawCanvasPixelsOnScreen(canvasObj, offsetX, offsetY){
+  const ps = screenScale;
+  const pix = canvasObj.pixels;
+  for(let y=0;y<canvasObj.h;y++){
+    for(let x=0;x<canvasObj.w;x++){
+      if(pix[y][x]){
+        screenCtx.fillStyle = '#fff';
+        screenCtx.fillRect((offsetX + x)*ps, (offsetY + y)*ps, ps, ps);
+      }
     }
+  }
+}
 
-    function sanitize(s){ return s.replace(/[^\w]/g,'_'); }
-
-    function downloadHeaderForSingle(region, cindex){
-      const c = region.canvases[cindex];
+// Fix: Export buttons must work with template canvases
+function exportAllToHeader(){
+  let header = `// Generated by OLED Canvas Editor (web)\n#include <stdint.h>\n\n`;
+  templates.forEach((tmpl, ti) => {
+    tmpl.canvases.forEach((c, ci) => {
       const p = packFrameBytes(c.pixels, c.w, c.h);
-      const name = `${sanitize(region.name)}_${sanitize(c.name)}`;
-      let header = `// region "${region.name}" (${region.w}x${region.h}) canvas "${c.name}"\n#include <stdint.h>\n\n`;
+      const name = `${sanitize(tmpl.name)}_${sanitize(c.name)}_t${ti}_c${ci}`;
+      header += `// template "${tmpl.name}" (${tmpl.w}x${tmpl.h}) canvas "${c.name}"\n`;
       header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
       header += `const uint8_t ${name}[] = { \n    `;
       p.bytes.forEach((b, idx)=>{
@@ -533,11 +534,28 @@
         if(idx < p.bytes.length-1) header += ', ';
         if((idx+1)%16===0) header += '\n    ';
       });
-      header += '\n};\n';
-      downloadText(name + '.h', header);
-    }
+      header += '\n};\n\n';
+    });
+  });
+  downloadText('images_all.h', header);
+}
 
-    // start
+function downloadHeaderForSingle(canvasObj, canvasName){
+  const p = packFrameBytes(canvasObj.pixels, canvasObj.w, canvasObj.h);
+  const name = sanitize(canvasName);
+  let header = `// canvas "${canvasName}" (${canvasObj.w}x${canvasObj.h})\n#include <stdint.h>\n\n`;
+  header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
+  header += `const uint8_t ${name}[] = { \n    `;
+  p.bytes.forEach((b, idx)=>{
+    header += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
+    if(idx < p.bytes.length-1) header += ', ';
+    if((idx+1)%16===0) header += '\n    ';
+  });
+  header += '\n};\n';
+  downloadText(name + '.h', header);
+}
+
+// start
     init();
   </script>
 </body>
