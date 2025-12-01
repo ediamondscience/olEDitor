@@ -503,9 +503,9 @@
 
       function toggleAt(cur, e){
         const rect = canvas.getBoundingClientRect();
-        const ps = screenScale;
-        const x = Math.floor((e.clientX - rect.left) / ps);
-        const y = Math.floor((e.clientY - rect.top) / ps);
+        const ps = scale;
+        const x = Math.floor((e.clientX - rect.left) / ps - 0.5);
+        const y = Math.floor((e.clientY - rect.top) / ps - 0.5);
         if(x>=0 && x<cur.w && y>=0 && y<cur.h){
           cur.pixels[y][x] = 1;
           render();
