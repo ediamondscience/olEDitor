@@ -32,7 +32,8 @@ You can use the editor directly from the link above, or by downloading the `inde
     *   In the **Regions** list, find the region you want to edit and click its "Edit" button. This opens the **Editor** panel for that region's template.
     *   In the **Editor** panel, enter a name for a new canvas and click "Create Canvas".
     *   Click the "Open" button next to the canvas name. A pixel editor will appear.
-    *   Click on the pixels in the editor grid to draw your graphic (1-bit, on/off).
+    *   **To Draw:** Make sure the editor is in "Draw" mode (the default). Click and drag the primary mouse button (usually the left button) on the grid to draw pixels.
+    *   **To Erase:** Click the "Mode: Draw" button to toggle it to "Mode: Erase". Then, click and drag with the primary mouse button to erase pixels.
 6.  **Preview Graphics:**
     *   In the **Regions** list, select a canvas from the dropdown menu next to the "Preview" button.
     *   Click the "Preview" button to toggle the display of that canvas on the screen.

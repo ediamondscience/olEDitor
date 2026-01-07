@@ -144,6 +144,7 @@
     // editor state
     let editingRegionId = null;
     let editingCanvasIndex = null;
+    let drawMode = 'draw'; // 'draw' or 'erase'
 
     // initialize
     function init() {
@@ -489,6 +490,11 @@
          invertBtn.onclick = ()=>{ for(let y=0;y<c.h;y++) for(let x=0;x<c.w;x++) c.pixels[y][x] = c.pixels[y][x] ? 0 : 1; renderEditor(); renderScreen(); };
          const exportBtn = document.createElement('button'); exportBtn.textContent='Export Canvas'; exportBtn.className='small';
          exportBtn.onclick = ()=>{ downloadHeaderForSingle(c, c.name); };
+         const modeBtn = document.createElement('button');
+         modeBtn.textContent = `Mode: ${drawMode === 'draw' ? 'Draw' : 'Erase'}`;
+         modeBtn.className = 'small';
+         modeBtn.onclick = ()=>{ drawMode = drawMode === 'draw' ? 'erase' : 'draw'; renderEditor(); };
+         edControls.appendChild(modeBtn);
          edControls.appendChild(clearBtn); edControls.appendChild(invertBtn); edControls.appendChild(exportBtn);
          editorWrap.appendChild(edControls);
 
@@ -528,13 +534,13 @@
         ctx.stroke();
       }
 
-      function toggleAt(cur, e){
+      function toggleAt(cur, e, value){
         const rect = canvas.getBoundingClientRect();
         const ps = scale;
         const x = Math.floor((e.clientX - rect.left) / ps - 0.5);
         const y = Math.floor((e.clientY - rect.top) / ps - 0.5);
         if(x>=0 && x<cur.w && y>=0 && y<cur.h){
-          cur.pixels[y][x] = 1;
+          cur.pixels[y][x] = value;
           render();
         }
       }
@@ -542,19 +548,23 @@
       // stable per-canvas state
       if(!canvas._handlersAttached){
         canvas._drawing = false;
+        canvas._drawValue = 1;
 
         const down = (e) => {
+          if (e.button !== 0) return; // only left-click
+          e.preventDefault();
           canvas._drawing = true;
           canvas.setPointerCapture(e.pointerId);
-          // simple behaviour: left-click draws (1), other buttons clear (0)
+          canvas._drawValue = drawMode === 'draw' ? 1 : 0;
           const cur = canvas._getCanvasObj();
-          toggleAt(cur, e);
+          toggleAt(cur, e, canvas._drawValue);
         };
 
         const move = (e) => {
           if(!canvas._drawing) return;
+          e.preventDefault();
           const cur = canvas._getCanvasObj();
-          toggleAt(cur, e);
+          toggleAt(cur, e, canvas._drawValue);
         };
 
         const up = (e) => {
@@ -562,6 +572,7 @@
           canvas.releasePointerCapture(e.pointerId);
         };
 
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
         canvas.addEventListener('pointerdown', down, { passive: false });
         canvas.addEventListener('pointermove', move, { passive: false });
         canvas.addEventListener('pointerup', up, { passive: false });
@@ -724,20 +735,24 @@ function exportAllToHeader(){
       const p = packFrameBytes(c.pixels, c.w, c.h);
       const base_name = `${sanitize(tmpl.name)}_${sanitize(c.name)}`;
       const struct_name = `${base_name}`;
+      const data_array_name = `${struct_name}_data`;
+
+      // Data array definition
+      canvas_struct_definitions += `const uint8_t ${data_array_name}[] PROGMEM = {\n    `;
+      p.bytes.forEach((b, idx)=>{
+        canvas_struct_definitions += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
+        if(idx < p.bytes.length-1) canvas_struct_definitions += ', ';
+        if((idx+1)%16===0 && idx < p.bytes.length - 1) canvas_struct_definitions += '\n    ';
+      });
+      canvas_struct_definitions += `\n};\n\n`;
+
 
       // Struct definition with compound literal
       canvas_struct_definitions += `const oled_canvas ${struct_name} PROGMEM = {\n`;
       canvas_struct_definitions += `    ${p.w}, // width\n`;
       canvas_struct_definitions += `    ${p.h}, // height\n`;
-      canvas_struct_definitions += `    (const uint8_t[]){\n        `;
-      
-      p.bytes.forEach((b, idx)=>{
-        canvas_struct_definitions += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
-        if(idx < p.bytes.length-1) canvas_struct_definitions += ', ';
-        if((idx+1)%16===0 && idx < p.bytes.length - 1) canvas_struct_definitions += '\n        ';
-      });
-
-      canvas_struct_definitions += `\n    }\n};\n\n`;
+      canvas_struct_definitions += `    ${data_array_name}\n`;
+      canvas_struct_definitions += `};\n\n`;
       
       // Store canvas details for region export
       canvas_map.set(`${tmpl.id}_${ci}`, {
