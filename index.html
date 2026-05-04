@@ -738,7 +738,7 @@ function exportAllToHeader(){
       const data_array_name = `${struct_name}_data`;
 
       // Data array definition
-      canvas_struct_definitions += `const uint8_t ${data_array_name}[] PROGMEM = {\n    `;
+      canvas_struct_definitions += `static const uint8_t ${data_array_name}[] PROGMEM = {\n    `;
       p.bytes.forEach((b, idx)=>{
         canvas_struct_definitions += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
         if(idx < p.bytes.length-1) canvas_struct_definitions += ', ';
@@ -748,7 +748,7 @@ function exportAllToHeader(){
 
 
       // Struct definition with compound literal
-      canvas_struct_definitions += `const oled_canvas ${struct_name} PROGMEM = {\n`;
+      canvas_struct_definitions += `static const oled_canvas ${struct_name} PROGMEM = {\n`;
       canvas_struct_definitions += `    ${p.w}, // width\n`;
       canvas_struct_definitions += `    ${p.h}, // height\n`;
       canvas_struct_definitions += `    ${data_array_name}\n`;
@@ -768,7 +768,7 @@ function exportAllToHeader(){
       header += `// Pre-defined regions for drawing\n`;
       regions.forEach(r => {
         const sanitized_name = sanitize(r.name);
-        header += `const struct region ${sanitized_name} PROGMEM = { .x = ${r.x}, .y = ${r.y}, .width = ${r.w}, .height = ${r.h} };\n`;
+        header += `static const struct region ${sanitized_name} PROGMEM = { .x = ${r.x}, .y = ${r.y}, .width = ${r.w}, .height = ${r.h} };\n`;
       });
       header += `\n`;
   }
@@ -781,12 +781,12 @@ function downloadHeaderForSingle(canvasObj, canvasName){
   const name = sanitize(canvasName);
   let header = `// canvas "${canvasName}" (${canvasObj.w}x${canvasObj.h})\n#include <stdint.h>\n\n`;
   header += `// a region on the screen for drawing\nstruct region {\n    uint8_t height;\n    uint8_t width;\n    uint16_t offset; // byte offset into screen buffer\n};\n\n`;
-  header += `const uint8_t ${name}_width = ${p.w};\nconst uint8_t ${name}_height = ${p.h};\n`;
-  header += `const uint8_t ${name}[] PROGMEM = { \n    `;
+  header += `static const uint8_t ${name}_width = ${p.w};\nstatic const uint8_t ${name}_height = ${p.h};\n`;
+  header += `static const uint8_t ${name}[] PROGMEM = { \n    `;
   p.bytes.forEach((b, idx)=>{
     header += '0x' + b.toString(16).padStart(2,'0').toUpperCase();
     if(idx < p.bytes.length-1) header += ', ';
-    if((idx+1)%16===0) header += '\n    ';
+    if((idx+1)%16===0 && idx < p.bytes.length - 1) header += '\n    ';
   });
   header += '\n};\n';
   downloadText(name + '.h', header);
